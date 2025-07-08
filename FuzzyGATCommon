@@ -1,0 +1,125 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import softmax
+import math
+
+class FuzzyGATLayer(MessagePassing):
+    def __init__(self, in_channels, out_channels, heads=1, concat=True, dropout=0.1, eps=1e-6):
+        super(FuzzyGATLayer, self).__init__(aggr='add')
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.heads = heads
+        self.concat = concat
+        self.dropout = dropout
+        self.eps = eps
+
+        # Linear transformation for node features
+        self.lin = nn.Linear(in_channels, heads * out_channels, bias=False)
+        # Attention vector for each head
+        self.att = nn.Parameter(torch.Tensor(1, heads, 2 * out_channels))
+        # Initialize parameters
+        nn.init.xavier_uniform_(self.lin.weight)
+        nn.init.xavier_uniform_(self.att)
+
+    def forward(self, x, edge_index):
+        # x: Node features [N, in_channels]
+        # edge_index: Edge indices [2, E]
+        # Transform node features
+        h = self.lin(x).view(-1, self.heads, self.out_channels)  # [N, heads, out_channels]
+        # Compute attention scores
+        alpha, e_scores = self.compute_fuzzy_attention(h, edge_index)
+        # Propagate messages
+        out = self.propagate(edge_index, x=h, alpha=alpha)
+        # Concatenate or average heads
+        if self.concat:
+            out = out.view(-1, self.heads * self.out_channels)  # [N, heads * out_channels]
+        else:
+            out = out.mean(dim=1)  # [N, out_channels]
+        # Compute fuzzy entropy for uncertainty quantification
+        entropy = self.compute_fuzzy_entropy(alpha, edge_index)
+        return out, entropy
+
+    def compute_fuzzy_attention(self, h, edge_index):
+        # h: [N, heads, out_channels]
+        # edge_index: [2, E]
+        N = h.size(0)
+        row, col = edge_index  # Source and target nodes
+        # Compute attention scores
+        h_i = h[row]  # Source node features [E, heads, out_channels]
+        h_j = h[col]  # Target node features [E, heads, out_channels]
+        wh = torch.cat([h_i, h_j], dim=-1)  # [E, heads, 2 * out_channels]
+        e = (self.att * wh).sum(dim=-1)  # [E, heads]
+        e = F.leaky_relu(e, negative_slope=0.2)  # [E, heads]
+
+        # Compute mean and variance for Gaussian membership
+        e_mean = torch.zeros(N, self.heads, device=e.device)
+        e_mean.index_add_(0, row, e, alpha=torch.ones_like(e))
+        deg = torch.zeros(N, device=e.device)
+        deg.index_add_(0, row, torch.ones_like(row, dtype=torch.float))
+        deg = deg.clamp(min=1)
+        e_mean = e_mean / deg.view(-1, 1)  # [N, heads]
+
+        e_var = torch.zeros(N, self.heads, device=e.device)
+        e_diff = e - e_mean[row]  # [E, heads]
+        e_diff_sq = e_diff ** 2
+        e_var.index_add_(0, row, e_diff_sq, alpha=torch.ones_like(e_diff_sq))
+        e_var = e_var / deg.view(-1, 1) + self.eps  # [N, heads]
+
+        # Compute fuzzy membership (Gaussian)
+        mu = torch.exp(-((e - e_mean[row]) ** 2) / (2 * e_var[row]))  # [E, heads]
+        # Normalize fuzzy attention weights
+        alpha = softmax(mu, index=row, num_nodes=N)  # [E, heads]
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+        return alpha, e
+
+    def compute_fuzzy_entropy(self, alpha, edge_index):
+        # alpha: [E, heads]
+        # edge_index: [2, E]
+        row, _ = edge_index
+        N = alpha.size(0) // self.heads
+        # Compute entropy per node and head
+        entropy = torch.zeros(N, self.heads, device=alpha.device)
+        log_alpha = torch.log(alpha + self.eps)
+        entropy.index_add_(0, row, -alpha * log_alpha, alpha=torch.ones_like(alpha))
+        return entropy.mean(dim=1)  # [N]
+
+    def message(self, x_j, alpha):
+        # x_j: [E, heads, out_channels]
+        # alpha: [E, heads]
+        return alpha.unsqueeze(-1) * x_j  # [E, heads, out_channels]
+
+class FuzzyGAT(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, heads=4, num_layers=2, dropout=0.1):
+        super(FuzzyGAT, self).__init__()
+        self.layers = nn.ModuleList()
+        # Input layer
+        self.layers.append(FuzzyGATLayer(in_channels, hidden_channels, heads, concat=True, dropout=dropout))
+        # Hidden layers
+        for _ in range(num_layers - 2):
+            self.layers.append(FuzzyGATLayer(heads * hidden_channels, hidden_channels, heads, concat=True, dropout=dropout))
+        # Output layer
+        self.layers.append(FuzzyGATLayer(heads * hidden_channels, out_channels, heads, concat=False, dropout=dropout))
+
+    def forward(self, x, edge_index):
+        entropies = []
+        for layer in self.layers:
+            x, entropy = layer(x, edge_index)
+            x = F.elu(x)
+            entropies.append(entropy)
+        return x, torch.stack(entropies, dim=1)  # [N, out_channels], [N, num_layers]
+
+# Example usage
+if __name__ == "__main__":
+    from torch_geometric.data import Data
+    # Create a sample graph
+    x = torch.randn(5, 16)  # 5 nodes, 16 features
+    edge_index = torch.tensor([[0, 1, 1, 2, 2, 3, 3, 4], [1, 0, 2, 1, 3, 2, 4, 3]], dtype=torch.long)
+    data = Data(x=x, edge_index=edge_index)
+    # Initialize model
+    model = FuzzyGAT(in_channels=16, hidden_channels=8, out_channels=7, heads=4, num_layers=2)
+    # Forward pass
+    out, entropy = model(data.x, data.edge_index)
+    print("Output shape:", out.shape)  # [5, 7]
+    print("Entropy shape:", entropy.shape)  # [5, 2]
