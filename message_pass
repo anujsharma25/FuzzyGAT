@@ -1,0 +1,54 @@
+from utils import matrix_multiply
+
+class MessagePassing:
+    """
+    Base class for message passing in graph neural networks.
+    """
+    def __init__(self, aggr='add'):
+        """
+        Initialize message passing.
+
+        Args:
+            aggr (str): Aggregation method ('add' supported).
+        """
+        self.aggr = aggr
+
+    def propagate(self, edge_index, x, alpha, num_nodes):
+        """
+        Perform message passing.
+
+        Args:
+            edge_index (list of tuples): List of [source, target] edges.
+            x (list of lists): Node features [N, heads, out_channels].
+            alpha (list of lists): Attention weights [E, heads].
+            num_nodes (int): Number of nodes.
+
+        Returns:
+            list of lists: Aggregated messages [N, heads, out_channels].
+        """
+        # Initialize output
+        out = [[[0] * len(x[0][0]) for _ in range(len(x[0]))] for _ in range(num_nodes)]
+        # Process each edge
+        for (src, dst), alpha_e in zip(edge_index, alpha):
+            if 0 <= src < num_nodes and 0 <= dst < num_nodes:
+                # Compute message for each head
+                message = self.message(x[src], alpha_e)
+                # Aggregate messages
+                if self.aggr == 'add':
+                    for h in range(len(message)):
+                        for c in range(len(message[h])):
+                            out[dst][h][c] += message[h][c]
+        return out
+
+    def message(self, x_j, alpha):
+        """
+        Compute message for an edge.
+
+        Args:
+            x_j (list of lists): Source node features [heads, out_channels].
+            alpha (list): Attention weights [heads].
+
+        Returns:
+            list of lists: Message [heads, out_channels].
+        """
+        raise NotImplementedError("Message function must be implemented by subclass")
