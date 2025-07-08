@@ -1,0 +1,49 @@
+from fuzzy_gat import FuzzyGAT
+from utils import print_matrix
+
+def create_sample_graph():
+    """
+    Create a sample graph with 5 nodes, 16 features, and undirected edges.
+
+    Returns:
+        dict: Graph data with node features and edge indices.
+    """
+    # Node features: 5 nodes, 16 features
+    x = [[random.random() for _ in range(16)] for _ in range(5)]
+    # Edge indices: undirected edges
+    edge_index = [
+        (0, 1), (1, 0),
+        (1, 2), (2, 1),
+        (2, 3), (3, 2),
+        (3, 4), (4, 3)
+    ]
+    return {'x': x, 'edge_index': edge_index, 'num_nodes': 5}
+
+def main():
+    """
+    Example usage of the FuzzyGAT model.
+    """
+    # Create sample graph
+    data = create_sample_graph()
+    
+    # Initialize model
+    model = FuzzyGAT(
+        in_channels=16,
+        hidden_channels=8,
+        out_channels=7,  # 7 classes
+        heads=4,
+        num_layers=2,
+        dropout=0.1
+    )
+    
+    # Forward pass
+    out, entropy = model.forward(data['x'], data['edge_index'], data['num_nodes'])
+    
+    # Print results
+    print("Output shape:", (len(out), len(out[0])))  # [5, 7]
+    print("Entropy shape:", (len(entropy), len(entropy[0])))  # [5, 2]
+    print_matrix(out, "Output Features")
+    print_matrix(entropy, "Entropies")
+
+if __name__ == "__main__":
+    main()
