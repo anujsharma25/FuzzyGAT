@@ -1,0 +1,49 @@
+from fuzzy_gat_layer import FuzzyGATLayer
+from utils import elu
+
+class FuzzyGAT:
+    """
+    Fuzzy Graph Attention Network with multiple layers.
+    """
+    def __init__(self, in_channels, hidden_channels, out_channels, heads=4, num_layers=2, dropout=0.1):
+        """
+        Initialize the FuzzyGAT model.
+
+        Args:
+            in_channels (int): Input feature dimension.
+            hidden_channels (int): Hidden feature dimension per head.
+            out_channels (int): Output feature dimension (number of classes).
+            heads (int): Number of attention heads.
+            num_layers (int): Number of layers.
+            dropout (float): Dropout probability.
+        """
+        self.layers = []
+        # Input layer
+        self.layers.append(FuzzyGATLayer(in_channels, hidden_channels, heads, concat=True, dropout=dropout))
+        # Hidden layers
+        for _ in range(num_layers - 2):
+            self.layers.append(FuzzyGATLayer(heads * hidden_channels, hidden_channels, heads, concat=True, dropout=dropout))
+        # Output layer
+        self.layers.append(FuzzyGATLayer(heads * hidden_channels, out_channels, heads, concat=False, dropout=dropout))
+
+    def forward(self, x, edge_index, num_nodes):
+        """
+        Forward pass of the FuzzyGAT model.
+
+        Args:
+            x (list of lists): Node features [N, in_channels].
+            edge_index (list of tuples): List of [source, target] edges.
+            num_nodes (int): Number of nodes.
+
+        Returns:
+            tuple: (output features [N, out_channels], entropies [N, num_layers])
+        """
+        entropies = []
+        for layer in self.layers:
+            x, entropy = layer.forward(x, edge_index, num_nodes)
+            # Apply ELU activation
+            x = [[elu(val) for val in row] for row in x]
+            entropies.append(entropy)
+        # Stack entropies [N, num_layers]
+        entropies = [[entropies[l][i] for l in range(len(entropies))] for i in range(num_nodes)]
+        return x, entropies
