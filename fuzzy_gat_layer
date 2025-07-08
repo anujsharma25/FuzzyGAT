@@ -1,0 +1,173 @@
+from utils import matrix_multiply, leaky_relu, softmax, dropout, xavier_uniform, zeros, ones_like
+from message_passing import MessagePassing
+
+class FuzzyGATLayer(MessagePassing):
+    """
+    Fuzzy Graph Attention Layer with fuzzy attention and entropy computation.
+    """
+    def __init__(self, in_channels, out_channels, heads=1, concat=True, dropout=0.1, eps=1e-6):
+        """
+        Initialize the FuzzyGATLayer.
+
+        Args:
+            in_channels (int): Input feature dimension.
+            out_channels (int): Output feature dimension per head.
+            heads (int): Number of attention heads.
+            concat (bool): Whether to concatenate or average heads.
+            dropout (float): Dropout probability.
+            eps (float): Small constant for numerical stability.
+        """
+        super().__init__(aggr='add')
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.heads = heads
+        self.concat = concat
+        self.dropout = dropout
+        self.eps = eps
+        self.training = True  # Training mode flag
+
+        # Linear transformation weights
+        self.lin_weight = xavier_uniform((in_channels, heads * out_channels))
+        # Attention vector
+        self.att = xavier_uniform((1, heads, 2 * out_channels))
+
+    def forward(self, x, edge_index, num_nodes):
+        """
+        Forward pass of the FuzzyGATLayer.
+
+        Args:
+            x (list of lists): Node features [N, in_channels].
+            edge_index (list of tuples): List of [source, target] edges.
+            num_nodes (int): Number of nodes.
+
+        Returns:
+            tuple: (output features [N, heads * out_channels or out_channels], entropy [N])
+        """
+        # Transform node features: h = x @ W
+        h_flat = matrix_multiply(x, self.lin_weight)  # [N, heads * out_channels]
+        # Reshape to [N, heads, out_channels]
+        h = [[[h_flat[i][h * self.out_channels + c] for c in range(self.out_channels)]
+              for h in range(self.heads)] for i in range(num_nodes)]
+        
+        # Compute fuzzy attention
+        alpha, e_scores = self.compute_fuzzy_attention(h, edge_index, num_nodes)
+        
+        # Propagate messages
+        out = self.propagate(edge_index, h, alpha, num_nodes)
+        
+        # Concatenate or average heads
+        if self.concat:
+            # Flatten to [N, heads * out_channels]
+            out_flat = [[out[i][h][c] for h in range(self.heads) for c in range(self.out_channels)]
+                        for i in range(num_nodes)]
+        else:
+            # Average over heads [N, out_channels]
+            out_flat = [[sum(out[i][h][c] for h in range(self.heads)) / self.heads
+                         for c in range(self.out_channels)] for i in range(num_nodes)]
+        
+        # Compute fuzzy entropy
+        entropy = self.compute_fuzzy_entropy(alpha, edge_index, num_nodes)
+        
+        return out_flat, entropy
+
+    def compute_fuzzy_attention(self, h, edge_index, num_nodes):
+        """
+        Compute fuzzy attention weights.
+
+        Args:
+            h (list of lists): Node features [N, heads, out_channels].
+            edge_index (list of tuples): List of [source, target] edges.
+            num_nodes (int): Number of nodes.
+
+        Returns:
+            tuple: (attention weights [E, heads], raw attention scores [E, heads])
+        """
+        row, col = zip(*edge_index)  # Source and target nodes
+        E = len(edge_index)
+        
+        # Compute attention scores
+        e = []
+        for src, dst in edge_index:
+            h_i = h[src]  # [heads, out_channels]
+            h_j = h[dst]  # [heads, out_channels]
+            # Concatenate source and target features
+            wh = [h_i[h] + h_j[h] for h in range(self.heads)]  # [heads, 2 * out_channels]
+            # Compute attention score for each head
+            e_h = []
+            for h in range(self.heads):
+                score = sum(self.att[0][h][k] * wh[h][k] for k in range(2 * self.out_channels))
+                score = leaky_relu(score, negative_slope=0.2)
+                e_h.append(score)
+            e.append(e_h)  # [E, heads]
+        
+        # Compute mean and variance for Gaussian membership
+        e_mean = zeros((num_nodes, self.heads))
+        deg = [0] * num_nodes
+        for r, score in zip(row, e):
+            for h in range(self.heads):
+                e_mean[r][h] += score[h]
+            deg[r] += 1
+        deg = [max(d, 1) for d in deg]  # Clamp to avoid division by zero
+        e_mean = [[e_mean[i][h] / deg[i] for h in range(self.heads)] for i in range(num_nodes)]
+        
+        e_var = zeros((num_nodes, self.heads))
+        for r, score in zip(row, e):
+            for h in range(self.heads):
+                diff = score[h] - e_mean[r][h]
+                e_var[r][h] += diff * diff
+        e_var = [[e_var[i][h] / deg[i] + self.eps for h in range(self.heads)] for i in range(num_nodes)]
+        
+        # Compute fuzzy membership (Gaussian)
+        mu = []
+        for r, score in zip(row, e):
+            mu_h = []
+            for h in range(self.heads):
+                diff = score[h] - e_mean[r][h]
+                mu_h.append(math.exp(-(diff ** 2) / (2 * e_var[r][h])))
+            mu.append(mu_h)  # [E, heads]
+        
+        # Normalize fuzzy attention weights
+        alpha = []
+        for h in range(self.heads):
+            mu_h = [mu[e][h] for e in range(E)]
+            alpha_h = softmax(mu_h, list(row), num_nodes)
+            alpha_h = dropout(alpha_h, p=self.dropout, training=self.training)
+            alpha.append(alpha_h)
+        alpha = [[alpha[h][e] for h in range(self.heads)] for e in range(E)]  # [E, heads]
+        
+        return alpha, e
+
+    def compute_fuzzy_entropy(self, alpha, edge_index, num_nodes):
+        """
+        Compute fuzzy entropy per node.
+
+        Args:
+            alpha (list of lists): Attention weights [E, heads].
+            edge_index (list of tuples): List of [source, target] edges.
+            num_nodes (int): Number of nodes.
+
+        Returns:
+            list: Entropy per node [N].
+        """
+        row, _ = zip(*edge_index)
+        entropy = zeros((num_nodes, self.heads))
+        for e, (r, _), a in zip(range(len(alpha)), edge_index, alpha):
+            for h in range(self.heads):
+                if a[h] > self.eps:
+                    entropy[r][h] -= a[h] * math.log(a[h] + self.eps)
+        # Average over heads
+        entropy = [sum(entropy[i][h] for h in range(self.heads)) / self.heads for i in range(num_nodes)]
+        return entropy
+
+    def message(self, x_j, alpha):
+        """
+        Compute message for an edge.
+
+        Args:
+            x_j (list of lists): Source node features [heads, out_channels].
+            alpha (list): Attention weights [heads].
+
+        Returns:
+            list of lists: Message [heads, out_channels].
+        """
+        return [[alpha[h] * x_j[h][c] for c in range(self.out_channels)] for h in range(self.heads)]
