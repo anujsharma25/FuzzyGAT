@@ -1,0 +1,186 @@
+import random
+import math
+
+def matrix_multiply(A, B):
+    """
+    Multiply two matrices.
+
+    Args:
+        A (list of lists): First matrix.
+        B (list of lists): Second matrix.
+
+    Returns:
+        list of lists: Resulting matrix.
+    """
+    rows_A, cols_A = len(A), len(A[0])
+    rows_B, cols_B = len(B), len(B[0])
+    if cols_A != rows_B:
+        raise ValueError("Matrix dimensions incompatible for multiplication")
+    result = [[0] * cols_B for _ in range(rows_A)]
+    for i in range(rows_A):
+        for j in range(cols_B):
+            for k in range(cols_A):
+                result[i][j] += A[i][k] * B[k][j]
+    return result
+
+def matrix_add(A, B):
+    """
+    Add two matrices.
+
+    Args:
+        A (list of lists): First matrix.
+        B (list of lists): Second matrix.
+
+    Returns:
+        list of lists: Resulting matrix.
+    """
+    if len(A) != len(B) or len(A[0]) != len(B[0]):
+        raise ValueError("Matrix dimensions incompatible for addition")
+    return [[A[i][j] + B[i][j] for j in range(len(A[0]))] for i in range(len(A))]
+
+def matrix_scalar_multiply(A, scalar):
+    """
+    Multiply matrix by a scalar.
+
+    Args:
+        A (list of lists): Input matrix.
+        scalar (float): Scalar value.
+
+    Returns:
+        list of lists: Resulting matrix.
+    """
+    return [[scalar * A[i][j] for j in range(len(A[0]))] for i in range(len(A))]
+
+def matrix_transpose(X):
+    """
+    Transpose a matrix.
+
+    Args:
+        X (list of lists): Input matrix.
+
+    Returns:
+        list of lists: Transposed matrix.
+    """
+    return [[X[j][i] for j in range(len(X))] for i in range(len(X[0]))]
+
+def leaky_relu(x, negative_slope=0.2):
+    """
+    Apply Leaky ReLU activation function to a scalar.
+
+    Args:
+        x (float): Input value.
+        negative_slope (float): Slope for negative values.
+
+    Returns:
+        float: Output value.
+    """
+    return x if x > 0 else negative_slope * x
+
+def elu(x, alpha=1.0):
+    """
+    Apply ELU activation function to a scalar.
+
+    Args:
+        x (float): Input value.
+        alpha (float): Scaling factor for negative values.
+
+    Returns:
+        float: Output value.
+    """
+    return x if x > 0 else alpha * (math.exp(x) - 1)
+
+def softmax(x, indices, num_nodes):
+    """
+    Compute softmax over values for each group of indices.
+
+    Args:
+        x (list): Input values.
+        indices (list): Group indices for each value.
+        num_nodes (int): Number of groups (nodes).
+
+    Returns:
+        list: Softmax-normalized values.
+    """
+    max_idx = max(indices) + 1
+    if max_idx > num_nodes:
+        raise ValueError("Index exceeds num_nodes")
+    
+    # Compute max per group for numerical stability
+    max_per_group = [-float('inf')] * num_nodes
+    for val, idx in zip(x, indices):
+        max_per_group[idx] = max(max_per_group[idx], val)
+    
+    # Compute exponentials and sums
+    exp_sums = [0] * num_nodes
+    exps = []
+    for val, idx in zip(x, indices):
+        exp_val = math.exp(val - max_per_group[idx])
+        exps.append(exp_val)
+        exp_sums[idx] += exp_val
+    
+    # Normalize
+    result = []
+    for exp_val, idx in zip(exps, indices):
+        result.append(exp_val / (exp_sums[idx] + 1e-10))
+    return result
+
+def dropout(x, p=0.1, training=True):
+    """
+    Apply dropout to a list of values.
+
+    Args:
+        x (list): Input values.
+        p (float): Dropout probability.
+        training (bool): Whether in training mode.
+
+    Returns:
+        list: Values after dropout.
+    """
+    if not training or p == 0:
+        return x
+    result = []
+    for val in x:
+        if random.random() > p:
+            result.append(val / (1 - p))  # Scale to maintain expected value
+        else:
+            result.append(0)
+    return result
+
+def xavier_uniform(shape):
+    """
+    Initialize a matrix with Xavier uniform initialization.
+
+    Args:
+        shape (tuple): Shape of the matrix (rows, cols).
+
+    Returns:
+        list of lists: Initialized matrix.
+    """
+    rows, cols = shape
+    limit = math.sqrt(6 / (rows + cols))
+    return [[random.uniform(-limit, limit) for _ in range(cols)] for _ in range(rows)]
+
+def zeros(shape):
+    """
+    Create a matrix of zeros.
+
+    Args:
+        shape (tuple): Shape of the matrix (rows, cols).
+
+    Returns:
+        list of lists: Zero matrix.
+    """
+    rows, cols = shape
+    return [[0] * cols for _ in range(rows)]
+
+def ones_like(x):
+    """
+    Create a matrix of ones with the same shape as input.
+
+    Args:
+        x (list of lists): Input matrix.
+
+    Returns:
+        list of lists: Matrix of ones.
+    """
+    return [[1] * len(x[0]) for _ in range(len(x))]
