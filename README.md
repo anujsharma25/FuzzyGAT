@@ -1,9 +1,9 @@
-# FuzzyGAT
-# 🔍 Fuzzy-based Graph Attention Network (GAT) Operator
+
+# FuzzyGAT Operator
 
 A novel Graph Neural Network (GNN) operator that integrates **Fuzzy Logic** into the **Graph Attention Network (GAT)** framework to enhance reasoning under uncertainty, noise, and sparse data environments. This project implements the fuzzy-based GAT operator for improved node classification, graph classification, and representation learning tasks.
 
-## 🧠 Overview
+## Overview
 
 Conventional GATs leverage attention mechanisms to weigh neighboring nodes, but may struggle in uncertain or ambiguous graph structures. To address this, our **Fuzzy GAT Operator** introduces:
 
