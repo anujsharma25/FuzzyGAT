@@ -1,0 +1,135 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <float.h>
+
+#define NODES 5
+#define FEATURES 16
+#define HEADS 4
+#define OUT_CHANNELS 7
+#define EPS 1e-6
+
+float relu(float x) {
+    return x > 0 ? x : 0;
+}
+
+float leaky_relu(float x, float negative_slope) {
+    return x > 0 ? x : negative_slope * x;
+}
+
+float gaussian_membership(float x, float mean, float var) {
+    float diff = x - mean;
+    return expf(- (diff * diff) / (2.0f * var + EPS));
+}
+
+float log_safe(float x) {
+    return logf(fmaxf(x, EPS));
+}
+
+
+void compute_fuzzy_attention(
+    float h[NODES][OUT_CHANNELS], // Node features
+    int edge_index[][2], int num_edges,
+    float att[2 * OUT_CHANNELS], // Attention weights
+    float alpha_out[][1], // Output attention per edge
+    float entropy_out[NODES]
+) {
+    float e[num_edges]; // Attention scores
+    float e_mean[NODES] = {0};
+    float e_var[NODES] = {0};
+    int deg[NODES] = {0};
+
+    // 1. Compute attention scores
+    for (int i = 0; i < num_edges; i++) {
+        int src = edge_index[i][0];
+        int tgt = edge_index[i][1];
+        float score = 0;
+        for (int j = 0; j < OUT_CHANNELS; j++) {
+            score += att[j] * h[src][j]; // W.h_i
+            score += att[OUT_CHANNELS + j] * h[tgt][j]; // W.h_j
+        }
+        e[i] = leaky_relu(score, 0.2f);
+        e_mean[src] += e[i];
+        deg[src]++;
+    }
+
+    // 2. Normalize mean and compute variance
+    for (int i = 0; i < NODES; i++) {
+        if (deg[i] > 0)
+            e_mean[i] /= deg[i];
+    }
+    for (int i = 0; i < num_edges; i++) {
+        int src = edge_index[i][0];
+        float diff = e[i] - e_mean[src];
+        e_var[src] += diff * diff;
+    }
+    for (int i = 0; i < NODES; i++) {
+        if (deg[i] > 0)
+            e_var[i] = e_var[i] / deg[i] + EPS;
+        else
+            e_var[i] = 1.0f; // avoid division by zero
+    }
+
+    // 3. Gaussian membership + softmax
+    float sum_alpha[NODES] = {0};
+    for (int i = 0; i < num_edges; i++) {
+        int src = edge_index[i][0];
+        float mu = gaussian_membership(e[i], e_mean[src], e_var[src]);
+        alpha_out[i][0] = mu;
+        sum_alpha[src] += mu;
+    }
+    for (int i = 0; i < num_edges; i++) {
+        int src = edge_index[i][0];
+        alpha_out[i][0] /= sum_alpha[src] + EPS;
+    }
+
+    // 4. Compute entropy per node
+    for (int i = 0; i < NODES; i++) {
+        entropy_out[i] = 0;
+    }
+    for (int i = 0; i < num_edges; i++) {
+        int src = edge_index[i][0];
+        float a = alpha_out[i][0];
+        entropy_out[src] += -a * log_safe(a);
+    }
+}
+
+
+int main() {
+    // Example: 5 nodes, 16 features each
+    float x[NODES][FEATURES];
+    for (int i = 0; i < NODES; i++)
+        for (int j = 0; j < FEATURES; j++)
+            x[i][j] = ((float) rand()) / RAND_MAX;
+
+    // Simple dummy linear projection (no learned weights)
+    float h[NODES][OUT_CHANNELS];
+    for (int i = 0; i < NODES; i++)
+        for (int j = 0; j < OUT_CHANNELS; j++)
+            h[i][j] = x[i][j]; // copy first OUT_CHANNELS features
+
+    // Edge list: [source, target]
+    int edge_index[8][2] = {
+        {0, 1}, {1, 0}, {1, 2}, {2, 1},
+        {2, 3}, {3, 2}, {3, 4}, {4, 3}
+    };
+
+    float att[2 * OUT_CHANNELS];
+    for (int i = 0; i < 2 * OUT_CHANNELS; i++)
+        att[i] = ((float) rand()) / RAND_MAX;
+
+    float alpha[8][1];
+    float entropy[NODES];
+
+    compute_fuzzy_attention(h, edge_index, 8, att, alpha, entropy);
+
+    printf("Attention Weights (first 3 edges):\n");
+    for (int i = 0; i < 3; i++)
+        printf("Edge %d -> %d: %.4f\n", edge_index[i][0], edge_index[i][1], alpha[i][0]);
+
+    printf("\nEntropy per node:\n");
+    for (int i = 0; i < NODES; i++)
+        printf("Node %d: %.4f\n", i, entropy[i]);
+
+    return 0;
+}
